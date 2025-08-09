@@ -33,4 +33,260 @@
   }
   #msg.hidden { display:none; }
   button {
-    padding:10px 14px; border:1px solid #3b3f4
+    padding:10px 14px; border:1px solid #3b3f48; background:#191d25; color:#eee; border-radius:10px; cursor:pointer;
+  }
+  button:hover { filter:brightness(1.1); }
+  button:active { transform:translateY(1px); }
+  .ghost { background:transparent; border-color:#2a2f38; }
+  /* Mobile controls */
+  .pad { display:none; gap:12px; margin-top:8px; }
+  .pad button { width:120px; }
+  @media (max-width: 480px) {
+    :root { --w: 92vw; --h: 70vh; }
+    .pad { display:flex; }
+  }
+  .pill {
+    padding:6px 10px; border:1px solid #2a2f38; background:#141820; border-radius:999px; font-size:12px; opacity:.95;
+  }
+  .mute { margin-left:6px; }
+  .tiny { font-size:12px; opacity:.9; }
+  .linkish { text-decoration: underline dotted; cursor:pointer; opacity:.9; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="game" aria-label="Dodge Runner game area">
+    <div class="lane"></div>
+    <div id="player" role="img" aria-label="player"></div>
+    <div id="hud">
+      <div id="scores">
+        <div id="score" class="pill">Score: 0</div>
+        <div id="hiscore" class="pill">Hi: 0</div>
+      </div>
+      <div>
+        <span id="state" class="pill">READY</span>
+        <button id="muteBtn" class="pill mute" aria-pressed="false">🔊</button>
+      </div>
+    </div>
+    <div id="msg">
+      <h1 style="margin:0">Dodge Runner+</h1>
+      <p class="tiny">← →（A/D）で移動 / P: 一時停止 / R: リスタート</p>
+      <button id="startBtn">スタート</button>
+      <div class="tiny">ハイスコアはブラウザに保存されます</div>
+      <div id="resetHS" class="linkish tiny">ハイスコアをリセット</div>
+    </div>
+  </div>
+  <div class="pad" aria-hidden="false">
+    <button id="leftBtn">◀ 左</button>
+    <button id="rightBtn">右 ▶</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const game = document.getElementById('game');
+  const player = document.getElementById('player');
+  const scoreEl = document.getElementById('score');
+  const hiscoreEl = document.getElementById('hiscore');
+  const stateEl = document.getElementById('state');
+  const msg = document.getElementById('msg');
+  const startBtn = document.getElementById('startBtn');
+  const leftBtn = document.getElementById('leftBtn');
+  const rightBtn = document.getElementById('rightBtn');
+  const muteBtn = document.getElementById('muteBtn');
+  const resetHS = document.getElementById('resetHS');
+
+  // --- Persisted High Score ---
+  const HS_KEY = 'dodge_highscore_v1';
+  let hi = Number(localStorage.getItem(HS_KEY) || 0);
+  hiscoreEl.textContent = 'Hi: ' + hi;
+
+  // --- Audio (WebAudio, no external files) ---
+  let audioReady = false, muted = false, actx = null;
+  function initAudio() {
+    if (audioReady) return;
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    audioReady = true;
+  }
+  function beep({freq=440, dur=0.12, type='sine', vol=0.15, slideTo=null}) {
+    if (!audioReady || muted) return;
+    const t0 = actx.currentTime;
+    const osc = actx.createOscillator();
+    const gain = actx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    if (slideTo) osc.frequency.linearRampToValueAtTime(slideTo, t0 + dur);
+    gain.gain.setValueAtTime(vol, t0);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain).connect(actx.destination);
+    osc.start(t0); osc.stop(t0 + dur);
+  }
+  function burst() { // game over-ish
+    if (!audioReady || muted) return;
+    const t0 = actx.currentTime;
+    // two quick descending saw beeps
+    beep({freq:440, dur:0.1, type:'sawtooth', vol:0.2, slideTo:200});
+    setTimeout(()=>beep({freq:330, dur:0.14, type:'sawtooth', vol:0.17, slideTo:120}), 120);
+  }
+  function tick() { beep({freq:880, dur:0.05, type:'square', vol:0.08}); } // item/score blip
+  function startJingle() {
+    beep({freq:523, dur:0.08, type:'square', vol:0.1});
+    setTimeout(()=>beep({freq:659, dur:0.08, type:'square', vol:0.1}), 90);
+    setTimeout(()=>beep({freq:784, dur:0.1, type:'square', vol:0.12}), 180);
+  }
+
+  muteBtn.addEventListener('click', () => {
+    muted = !muted;
+    muteBtn.textContent = muted ? '🔇' : '🔊';
+    muteBtn.setAttribute('aria-pressed', String(!muted));
+    if (!audioReady) { initAudio(); startJingle(); }
+  });
+
+  const G = () => ({ w: game.clientWidth, h: game.clientHeight });
+  let running = false, paused = false, over = false;
+  let px = 0, vx = 0, speed = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--speed'));
+  const pSize = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--player'));
+  const eSize = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--enemy'));
+  let enemies = [];
+  let lastTime = 0, spawnTimer = 0, score = 0, difficulty = 1;
+  let scorePing = 0;
+
+  function reset() {
+    enemies.forEach(e => e.el.remove());
+    enemies = [];
+    const g = G();
+    px = g.w/2; vx = 0; score = 0; difficulty = 1; speed = 2.2;
+    player.style.left = (px - pSize/2) + 'px';
+    scoreEl.textContent = 'Score: 0';
+    hiscoreEl.textContent = 'Hi: ' + hi;
+    stateEl.textContent = 'READY';
+    over = false; paused = false; scorePing = 0;
+    msg.querySelector('h1').textContent = 'Dodge Runner+';
+    msg.querySelector('p.tiny').innerHTML = '← →（A/D）で移動 / P: 一時停止 / R: リスタート';
+    startBtn.textContent = 'スタート';
+  }
+
+  function start() {
+    if (!audioReady) { initAudio(); startJingle(); }
+    reset();
+    msg.classList.add('hidden');
+    running = true;
+    lastTime = performance.now();
+    requestAnimationFrame(loop);
+  }
+
+  function gameOver() {
+    running = false; over = true;
+    stateEl.textContent = 'GAME OVER';
+    msg.classList.remove('hidden');
+    const isRecord = Math.floor(score) > hi;
+    if (isRecord) {
+      hi = Math.floor(score);
+      localStorage.setItem(HS_KEY, String(hi));
+    }
+    msg.querySelector('h1').textContent = isRecord ? 'New Record! 🎉' : 'GAME OVER';
+    msg.querySelector('p.tiny').innerHTML = `スコア: <b>${Math.floor(score)}</b> / ハイスコア: <b>${hi}</b><br/>Rで再挑戦！`;
+    startBtn.textContent = 'もう一度';
+    burst();
+  }
+
+  function pauseToggle() {
+    if (!running) return;
+    paused = !paused;
+    stateEl.textContent = paused ? 'PAUSED' : 'PLAY';
+    if (!paused) { lastTime = performance.now(); requestAnimationFrame(loop); }
+  }
+
+  function spawnEnemy() {
+    const el = document.createElement('div');
+    el.className = 'enemy';
+    const g = G();
+    const x = Math.random()*(g.w - eSize);
+    el.style.left = x + 'px';
+    el.style.top = (-eSize) + 'px';
+    game.appendChild(el);
+    enemies.push({ el, x, y: -eSize, vy: 1.2*speed + Math.random()*speed });
+  }
+
+  function loop(t) {
+    if (!running) return;
+    const dt = Math.min(32, t - lastTime); // ms cap
+    lastTime = t;
+    if (paused) return;
+
+    // difficulty & score
+    score += dt*0.01*difficulty;
+    spawnTimer += dt;
+    if (spawnTimer > 600/Math.sqrt(difficulty)) { spawnTimer = 0; spawnEnemy(); }
+    if (Math.floor(score) % 50 === 0) difficulty = 1 + Math.floor(score)/100;
+
+    // small score tick sfx every ~5 points (not too noisy)
+    scorePing += dt*0.01*difficulty;
+    if (scorePing >= 5) { scorePing = 0; tick(); }
+
+    // input -> position
+    const g = G();
+    px += vx * dt * 0.4;
+    px = Math.max(pSize/2, Math.min(g.w - pSize/2, px));
+    player.style.left = (px - pSize/2) + 'px';
+
+    // enemies update
+    for (let i=enemies.length-1; i>=0; i--) {
+      const e = enemies[i];
+      e.y += e.vy * dt * 0.09 * difficulty;
+      if (e.y > g.h + eSize) { e.el.remove(); enemies.splice(i,1); continue; }
+      e.el.style.top = e.y + 'px';
+
+      // collision (AABB)
+      const dx = Math.abs((px) - (e.x + eSize/2));
+      const dy = Math.abs((g.h - 16 - pSize/2) - (e.y + eSize/2));
+      if (dx < (pSize/2 + eSize/2) && dy < (pSize/2 + eSize/2)) { gameOver(); return; }
+    }
+
+    scoreEl.textContent = 'Score: ' + Math.floor(score);
+    stateEl.textContent = 'PLAY';
+    requestAnimationFrame(loop);
+  }
+
+  // keyboard input
+  const keys = new Set();
+  function updateVX() {
+    const left = keys.has('ArrowLeft') || keys.has('KeyA');
+    const right = keys.has('ArrowRight') || keys.has('KeyD');
+    vx = (right? 1:0) - (left? 1:0);
+  }
+  window.addEventListener('keydown', e => {
+    if (e.code === 'KeyP') { pauseToggle(); return; }
+    if (e.code === 'KeyR') { start(); return; }
+    keys.add(e.code);
+    updateVX();
+  });
+  window.addEventListener('keyup', e => { keys.delete(e.code); updateVX(); });
+
+  // touch buttons
+  let touchL = false, touchR = false;
+  function refreshTouchVX(){ vx = (touchR?1:0) - (touchL?1:0); }
+  leftBtn.addEventListener('pointerdown', ()=>{ touchL=true; refreshTouchVX(); });
+  rightBtn.addEventListener('pointerdown', ()=>{ touchR=true; refreshTouchVX(); });
+  const up = ()=>{ touchL=false; touchR=false; refreshTouchVX(); };
+  leftBtn.addEventListener('pointerup', up); rightBtn.addEventListener('pointerup', up);
+  leftBtn.addEventListener('pointerleave', up); rightBtn.addEventListener('pointerleave', up);
+
+  startBtn.addEventListener('click', start);
+  resetHS.addEventListener('click', () => {
+    localStorage.removeItem(HS_KEY);
+    hi = 0; hiscoreEl.textContent = 'Hi: 0';
+    if (!msg.classList.contains('hidden')) msg.querySelector('h1').textContent = 'Dodge Runner+';
+  });
+
+  // First layout
+  function firstLayout(){ const g = G(); px = g.w/2; player.style.left = (px - pSize/2) + 'px'; }
+  window.addEventListener('resize', firstLayout);
+
+  // Init
+  firstLayout();
+  reset();
+})();
+</script>
+</body>
+</html>
