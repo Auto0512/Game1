@@ -3,186 +3,34 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Dodge Runner</title>
+<title>Dodge Runner+ (Hi-Score & Sound)</title>
 <style>
   :root { --w: 420px; --h: 640px; --player: 40px; --enemy: 28px; --speed: 2.2; }
-  body { display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; background:#111; color:#eee; font-family: system-ui, sans-serif;}
-  .wrap { display:flex; flex-direction:column; gap:10px; align-items:center; }
+  * { box-sizing: border-box; }
+  body { display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; background:#0f0f12; color:#eee; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;}
+  .wrap { display:flex; flex-direction:column; gap:10px; align-items:center; padding:18px; }
   #game {
-    position:relative; width:var(--w); height:var(--h); background:linear-gradient(#1b1b1b,#0f0f0f);
-    border:2px solid #333; overflow:hidden; border-radius:10px; touch-action:none; user-select:none;
+    position:relative; width:var(--w); height:var(--h);
+    background: radial-gradient(120% 80% at 50% 10%, #171a22, #0d0f14 60%, #0a0c10);
+    border:2px solid #222; overflow:hidden; border-radius:14px; touch-action:none; user-select:none;
   }
-  .lane { position:absolute; top:0; bottom:0; width:2px; background:#262626; left:calc(50% - 1px);}
+  .lane { position:absolute; top:0; bottom:0; width:2px; background:#232833; left:calc(50% - 1px);}
   #player {
     position:absolute; bottom:16px; left:calc(50% - var(--player)/2);
-    width:var(--player); height:var(--player); border-radius:6px; background:#4caf50; box-shadow:0 0 8px #4caf50aa;
+    width:var(--player); height:var(--player); border-radius:6px; background:#4caf50; box-shadow:0 0 10px #4caf50aa;
   }
   .enemy {
     position:absolute; width:var(--enemy); height:var(--enemy); border-radius:4px;
-    background:#e74c3c; box-shadow:0 0 8px #e74c3caa;
+    background:#e74c3c; box-shadow:0 0 10px #e74c3caa;
   }
-  #hud { position:absolute; top:8px; left:8px; right:8px; display:flex; justify-content:space-between; font-weight:600; }
+  #hud {
+    position:absolute; top:8px; left:8px; right:8px; display:flex; gap:8px; align-items:center; justify-content:space-between; font-weight:600; font-size:14px;
+  }
+  #scores { display:flex; gap:10px; }
   #msg {
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column;
-    background:linear-gradient(#00000088,#00000088); gap:10px; text-align:center; padding:0 20px;
+    background:linear-gradient(#00000088,#00000088); gap:12px; text-align:center; padding:0 20px;
   }
   #msg.hidden { display:none; }
   button {
-    padding:10px 14px; border:1px solid #444; background:#1f1f1f; color:#eee; border-radius:8px; cursor:pointer;
-  }
-  button:active { transform:translateY(1px); }
-  /* Mobile controls */
-  .pad { display:none; gap:12px; }
-  .pad button { width:120px; }
-  @media (max-width: 480px) {
-    :root { --w: 92vw; --h: 70vh; }
-    .pad { display:flex; }
-  }
-</style>
-</head>
-<body>
-<div class="wrap">
-  <div id="game" aria-label="Dodge Runner game area">
-    <div class="lane"></div>
-    <div id="player" role="img" aria-label="player"></div>
-    <div id="hud"><div id="score">Score: 0</div><div id="state">READY</div></div>
-    <div id="msg">
-      <h1 style="margin:0">Dodge Runner</h1>
-      <p>← → で移動（スマホは下のボタン）。<br/>P: 一時停止 / R: リスタート</p>
-      <button id="startBtn">スタート</button>
-    </div>
-  </div>
-  <div class="pad" aria-hidden="false">
-    <button id="leftBtn">◀ 左</button>
-    <button id="rightBtn">右 ▶</button>
-  </div>
-</div>
-
-<script>
-(() => {
-  const game = document.getElementById('game');
-  const player = document.getElementById('player');
-  const scoreEl = document.getElementById('score');
-  const stateEl = document.getElementById('state');
-  const msg = document.getElementById('msg');
-  const startBtn = document.getElementById('startBtn');
-  const leftBtn = document.getElementById('leftBtn');
-  const rightBtn = document.getElementById('rightBtn');
-
-  const G = { w: game.clientWidth, h: game.clientHeight };
-  let running = false, paused = false, over = false;
-  let px = G.w/2, vx = 0, speed = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--speed'));
-  const pSize = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--player'));
-  const eSize = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--enemy'));
-  let enemies = [];
-  let lastTime = 0, spawnTimer = 0, score = 0, difficulty = 1;
-
-  function reset() {
-    enemies.forEach(e => e.el.remove());
-    enemies = [];
-    px = G.w/2; vx = 0; score = 0; difficulty = 1; speed = 2.2;
-    player.style.left = (px - pSize/2) + 'px';
-    scoreEl.textContent = 'Score: 0';
-    stateEl.textContent = 'READY';
-    over = false; paused = false;
-  }
-
-  function start() {
-    reset();
-    msg.classList.add('hidden');
-    running = true;
-    lastTime = performance.now();
-    requestAnimationFrame(loop);
-  }
-
-  function gameOver() {
-    running = false; over = true;
-    stateEl.textContent = 'GAME OVER';
-    msg.classList.remove('hidden');
-    msg.querySelector('h1').textContent = 'GAME OVER';
-    msg.querySelector('p').innerHTML = `スコア: <b>${Math.floor(score)}</b><br/>Rで再挑戦！`;
-    startBtn.textContent = 'もう一度';
-  }
-
-  function pauseToggle() {
-    if (!running) return;
-    paused = !paused;
-    stateEl.textContent = paused ? 'PAUSED' : 'PLAY';
-    if (!paused) { lastTime = performance.now(); requestAnimationFrame(loop); }
-  }
-
-  function spawnEnemy() {
-    const el = document.createElement('div');
-    el.className = 'enemy';
-    const x = Math.random()*(G.w - eSize);
-    el.style.left = x + 'px';
-    el.style.top = (-eSize) + 'px';
-    game.appendChild(el);
-    enemies.push({ el, x, y: -eSize, vy: 1.2*speed + Math.random()*speed });
-  }
-
-  function loop(t) {
-    if (!running) return;
-    const dt = Math.min(32, t - lastTime); // ms cap
-    lastTime = t;
-    if (paused) return;
-
-    // difficulty curve
-    score += dt*0.01*difficulty;
-    spawnTimer += dt;
-    if (spawnTimer > 600/Math.sqrt(difficulty)) { spawnTimer = 0; spawnEnemy(); }
-    if (Math.floor(score) % 50 === 0) difficulty = 1 + Math.floor(score)/100;
-
-    // input -> position
-    px += vx * dt * 0.4;
-    px = Math.max(pSize/2, Math.min(G.w - pSize/2, px));
-    player.style.left = (px - pSize/2) + 'px';
-
-    // enemies update
-    for (let i=enemies.length-1; i>=0; i--) {
-      const e = enemies[i];
-      e.y += e.vy * dt * 0.09 * difficulty;
-      if (e.y > G.h + eSize) { e.el.remove(); enemies.splice(i,1); continue; }
-      e.el.style.top = e.y + 'px';
-
-      // collision (AABB)
-      const dx = Math.abs((px) - (e.x + eSize/2));
-      const dy = Math.abs((G.h - 16 - pSize/2) - (e.y + eSize/2));
-      if (dx < (pSize/2 + eSize/2) && dy < (pSize/2 + eSize/2)) { gameOver(); return; }
-    }
-
-    scoreEl.textContent = 'Score: ' + Math.floor(score);
-    stateEl.textContent = 'PLAY';
-    requestAnimationFrame(loop);
-  }
-
-  // keyboard input
-  const keys = new Set();
-  function updateVX() {
-    const left = keys.has('ArrowLeft') || keys.has('KeyA');
-    const right = keys.has('ArrowRight') || keys.has('KeyD');
-    vx = (right? 1:0) - (left? 1:0);
-  }
-  window.addEventListener('keydown', e => {
-    if (e.code === 'KeyP') { pauseToggle(); return; }
-    if (e.code === 'KeyR') { start(); return; }
-    keys.add(e.code);
-    updateVX();
-  });
-  window.addEventListener('keyup', e => { keys.delete(e.code); updateVX(); });
-
-  // touch buttons
-  let touchL = false, touchR = false;
-  function refreshTouchVX(){ vx = (touchR?1:0) - (touchL?1:0); }
-  leftBtn.addEventListener('pointerdown', ()=>{ touchL=true; refreshTouchVX(); });
-  rightBtn.addEventListener('pointerdown', ()=>{ touchR=true; refreshTouchVX(); });
-  const up = ()=>{ touchL=false; touchR=false; refreshTouchVX(); };
-  leftBtn.addEventListener('pointerup', up); rightBtn.addEventListener('pointerup', up);
-  leftBtn.addEventListener('pointerleave', up); rightBtn.addEventListener('pointerleave', up);
-
-  startBtn.addEventListener('click', start);
-  reset();
-})();
-</script>
-</body>
-</html>
+    padding:10px 14px; border:1px solid #3b3f4
